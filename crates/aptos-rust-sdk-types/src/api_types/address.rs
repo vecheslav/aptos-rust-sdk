@@ -8,7 +8,19 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum AccountAddressParseError {
-    #[error("Account address hex characters are invalid: {0}")]
+    #[error("Account address is too long: {0}")]
+    TooLong(String),
+
+    #[error("Account address is too short: {0}")]
+    TooShort(String),
+
+    #[error("Account address contains a non-hex character: {0}")]
+    NonHexCharacter(String),
+
+    #[error("Account address must start with 0x")]
+    LeadingZeroXRequired,
+
+    #[error("Account address contains invalid hex characters: {0}")]
     InvalidHexChars(String),
 }
 
@@ -54,6 +66,12 @@ impl AccountAddress {
     pub fn to_vec(&self) -> Vec<u8> {
         self.0.to_vec()
     }
+
+    pub fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, AccountAddressParseError> {
+        <[u8; Self::LENGTH]>::from_hex(hex)
+            .map_err(|e| AccountAddressParseError::InvalidHexChars(format!("{:#}", e)))
+            .map(Self)
+    }
 }
 
 impl Debug for AccountAddress {
@@ -72,29 +90,50 @@ impl FromStr for AccountAddress {
     type Err = AccountAddressParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // We have to be pretty permissive here.
-        // TODO: we should probably... prevent shorts without 0x
-        let literal = s.strip_prefix("0x").unwrap_or(s);
+        const NUM_CHARS: usize = AccountAddress::LENGTH * 2;
+        let mut has_0x = false;
+        let mut working = s.trim();
 
-        // Verify the hex string
-        let hex_len = literal.len();
+        // Checks if it has a 0x at the beginning, which is okay
+        if working.starts_with("0x") {
+            has_0x = true;
+            working = &working[2..];
+        }
 
-        // If the string is too short, pad it
-        let hex_str = if hex_len < Self::LENGTH * 2 {
-            let mut hex_str = String::with_capacity(Self::LENGTH * 2);
-            for _ in 0..Self::LENGTH * 2 - hex_len {
-                hex_str.push('0');
+        if working.len() > NUM_CHARS {
+            return Err(AccountAddressParseError::TooLong(s.to_string()));
+        } else if !has_0x && working.len() < NUM_CHARS {
+            return Err(AccountAddressParseError::TooShort(s.to_string()));
+        }
+
+        if !working.chars().all(|c| char::is_ascii_hexdigit(&c)) {
+            return Err(AccountAddressParseError::NonHexCharacter(s.to_string()));
+        }
+
+        let account_address = if has_0x {
+            let literal = s.trim();
+            if !literal.starts_with("0x") {
+                return Err(AccountAddressParseError::LeadingZeroXRequired);
             }
-            hex_str.push_str(&literal[2..]);
-            hex_str
-        } else {
-            literal.to_string()
-        };
 
-        // Convert from hex string
-        <[u8; Self::LENGTH]>::from_hex(hex_str)
-            .map_err(|e| AccountAddressParseError::InvalidHexChars(format!("{:#}", e)))
-            .map(Self)
+            let hex_len = literal.len() - 2;
+
+            // If the string is too short, pad it
+            if hex_len < Self::LENGTH * 2 {
+                let mut hex_str = String::with_capacity(Self::LENGTH * 2);
+                for _ in 0..Self::LENGTH * 2 - hex_len {
+                    hex_str.push('0');
+                }
+                hex_str.push_str(&literal[2..]);
+                AccountAddress::from_hex(hex_str)
+            } else {
+                AccountAddress::from_hex(&literal[2..])
+            }
+        } else {
+            AccountAddress::from_str(s.trim())
+        }?;
+
+        Ok(account_address.into())
     }
 }
 
